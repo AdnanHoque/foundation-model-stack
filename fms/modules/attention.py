@@ -224,10 +224,6 @@ class FusedQKV(QKV):
 def causal_mask_prefill(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
-def causal_mask_decode(self, b, h, q_idx, kv_idx):
-    offset = self.kv_len - self.q_len
-    return offset + q_idx >= kv_idx
-
 class MultiHeadAttention(nn.Module):
     """
     Performs multi-headed self- or cross-attention, with optional attention masking.
@@ -393,7 +389,7 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             # Our expected mask format is bs x q_len x k_len, so to make it broadcastable
             # we need to create the nheads dimension
-            while len(mask.size()) != 4:  # expects bs (x nheads) x q_len x kv_len
+            while  isinstance(mask, torch.Tensor) and len(mask.size()) != 4:  # expects bs (x nheads) x q_len x kv_len
                 mask = mask.unsqueeze(1)
 
         if self.position_encoder is not None:
@@ -440,19 +436,17 @@ class MultiHeadAttention(nn.Module):
             )
 
         if USE_TRITON:
-            
             bs, nh, seq_len, hd = queries.shape
             if seq_len > 1:
 
-                block_mask = create_block_mask(causal_mask_prefill, bs, nh, seq_len, seq_len)
+                block_mask = create_block_mask(causal_mask_prefill, 1, 1, seq_len, seq_len)
                 attention = functools.partial(flex_attention, block_mask=block_mask, enable_gqa=True)
                 attn = attention(queries, keys_e, values_e)
 
             else:
-                _, _, kv_len, _ = keys_e.shape
-                block_mask = create_block_mask(lambda a, b, c, d: causal_mask_decode(self, a, b, c, d), bs, nh, seq_len, kv_len)
-                attention = functools.partial(flex_attention, block_mask=block_mask, enable_gqa=True)
-                attn = attention(queries, keys_e, values_e)
+                # attention = flex_attention
+                attention = torch.compile(flex_attention)
+                attn = attention(queries, keys_e, values_e, enable_gqa=True, kernel_options={"IS_DIVISIBLE": False})
 
 
         if attn_algorithm:
