@@ -184,14 +184,21 @@ def generate(
     if timing != "":
         times: List[float] = []
         start_time = time.time()
+    start = input_ids.shape[1]
     for i in range(max_new_tokens):
         input_ids = next_input[:, -max_seq_len:]
 
         # prepare any padding keyword arguments
         # iteration 0 is the prefill step (cache has not been filled yet), so no need to extend the mask/position_ids
+        kwargs.pop("mask", None)
         if i > 0:
             kwargs = __update_padding_kwargs(use_cache, kwargs)
-
+        from torch.nn.attention.flex_attention import create_block_mask
+        offset = torch.tensor(start + i, device=input_ids.device, dtype=torch.int32)
+        def causal_mask_decode(b, h, q_idx, kv_idx):
+            return (offset + q_idx) >= kv_idx
+        mask = create_block_mask(causal_mask_decode, 1, 1, 1, input_ids.shape[-1])
+        kwargs["mask"] = mask
         output = model(input_ids, **kwargs)
         if use_cache:
             logits, past_key_value_states = output
